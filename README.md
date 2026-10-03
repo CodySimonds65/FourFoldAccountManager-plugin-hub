@@ -29,14 +29,16 @@ How to write a plugin, and everything it can and can't do, is in
    ```
 
    - The file's name is your plugin's `id` from `plugin.json`, plus `.json`.
-   - `repository` must be exactly `https://github.com/owner/repo`, with no trailing slash or `/tree/...`.
+   - `repository` must be exactly `https://github.com/owner/repo`, with no trailing slash, no `.git` at the end and no
+     `/tree/...`.
    - `commit` is the full 40-character commit, in lowercase. A branch or a tag isn't accepted, because it can move.
    - If the plugin isn't at the repository's root, add `"path": "folder/inside/the/repo"`. `path` is written with
-     forward slashes, uses only letters, digits, `.`, `_` and `-`, and has no trailing slash.
+     forward slashes, uses only letters, digits, `.`, `_` and `-`, has no trailing slash, no `.` or `..` parts, and at
+     most 200 characters.
 
 4. Open a pull request that changes only that one file. A maintainer has to approve the check before it runs; its
-   summary page then shows what it found. If it fails, fix the problem in your plugin's repository and put the new
-   commit in your entry.
+   summary page then shows what it found. If it fails, fix the problem in your plugin's repository (then put the new
+   commit in your entry), or in the entry file itself.
 5. A maintainer reads the plugin's code at that commit. When they merge, the plugin is on the hub within a few
    minutes.
 
@@ -57,12 +59,15 @@ maintainer reviews what changed since the listed commit.
   counting the folders from the repository root and the file's name.
 - A package is `plugin.json` plus every file of a type FourFold serves (`.html .js .mjs .css .json .txt .png .jpg
   .jpeg .gif .svg .webp .woff2`) in the plugin's folder: at most 500 files and 5 MB in all. Every such file goes in,
-  whether or not your page loads it, so keep tests and screenshots in another folder. Everything else is left out,
-  such as `README.md` and `LICENSE`, and so is any file or folder whose name starts with a dot. Your panel page, and
+  whether or not your page loads it, so keep tests and screenshots outside the plugin's folder (put the plugin in a
+  folder and set `path`), or in a folder whose name starts with a dot. Everything else is left out, such as
+  `README.md` and `LICENSE`, and so is any file or folder whose name starts with a dot. Your panel page, and
   everything it loads, must be in the package, so none of them can start with a dot.
 - Links (symlinks) are left out. So is any file with a `\` or a `:` in its path.
 - The files that go in must unpack on Windows: a file or folder name can't contain `< > " | ? *` or a control
-  character, can't end in a dot or a space, and no two files can differ only by capital letters.
+  character, can't end in a dot or a space, and can't be named like a Windows device (`con`, `prn`, `aux`, `nul`,
+  `com0` to `com9`, `lpt0` to `lpt9`), alone or before a dot (`aux.js`). No two files can differ only by capital
+  letters.
 - **No secrets.** The whole repository is scanned at that commit. Everything in a plugin is public and runs on
   users' machines, so a plugin can never hold a secret key. If the scan finds one, remove it **and revoke it** —
   it is already public in your repository. If it is a false positive, add a `gitleaks:allow` comment on that line

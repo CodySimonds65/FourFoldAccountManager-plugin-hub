@@ -78,6 +78,7 @@ jobs:
             code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$base/$name") || code=000
             if [ "$code" = "200" ]; then
               args="--catalog $file"
+              echo "CATALOG_SOURCE=$name" >> "$GITHUB_ENV"
               break
             elif [ "$code" != "404" ]; then
               echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
@@ -111,8 +112,10 @@ jobs:
             exit 1
           fi
           # Replacing a release file is a delete and then an upload. If this run dies in between, the next run reads
-          # this copy as the live catalog.
-          if [ -s "$RUNNER_TEMP/catalog.json" ]; then
+          # this copy as the live catalog. The copy is saved only when the live catalog itself was fetched: a run that
+          # fell back to catalog.previous.json must not upload that same file over itself, because if that upload
+          # failed, both files would be gone.
+          if [ "${CATALOG_SOURCE:-}" = catalog.json ] && [ -s "$RUNNER_TEMP/catalog.json" ]; then
             cp "$RUNNER_TEMP/catalog.json" "$RUNNER_TEMP/catalog.previous.json"
             gh release upload catalog "$RUNNER_TEMP/catalog.previous.json" --clobber
           fi

@@ -168,6 +168,7 @@ jobs:
             code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$base/$name") || code=000
             if [ "$code" = "200" ]; then
               args="--catalog $file"
+              echo "CATALOG_SOURCE=$name" >> "$GITHUB_ENV"
               break
             elif [ "$code" != "404" ]; then
               echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
@@ -219,7 +220,7 @@ jobs:
           "$RUNNER_TEMP/gitleaks" detect --no-git --source "$work" --redact --verbose --no-banner 2>&1 || status=$?
           echo "::$token::"
           # How many files opt out of the scan with a gitleaks:allow comment, for the reviewer to see.
-          allowed=$(grep -rIl -- 'gitleaks:allow' "$work" | wc -l || true)
+          allowed=$(grep -rl -- 'gitleaks:allow' "$work" 2>/dev/null | wc -l || true)
           printf '\nSecret scan: files carrying a gitleaks:allow comment: %s.\n' "$allowed" >> "$GITHUB_STEP_SUMMARY"
           if [ "$status" -ne 0 ]; then
             echo "::error::The secret scan found a secret in a submitted repository, or couldn't run. A secret must be removed AND revoked: it is already public there."

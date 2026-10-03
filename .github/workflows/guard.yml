@@ -22,13 +22,21 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}
         run: |
+          # Anything unexpected is red: this step ends green only when every test below has said "fine" in plain words.
           # Each name comes back as a JSON string, so a name with a line break in it stays one quoted line. The pattern
           # is the plugin-id rule check.yml uses, with the quotes.
           files=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --jq '.[] | (.filename, (.previous_filename // empty)) | @json')
           [ -n "$files" ] || { echo "::error::The changed files couldn't be listed."; exit 1; }
+          # No pipe into grep: a reader that stops at the first bad line can kill the writer, and the pipeline then ends
+          # with a signal status that a test reads as "nothing wrong". grep -c reads the whole list and counts the names
+          # that are not entries; it exits 1 with a count of 0 only when every name is one.
+          rc=0
+          bad=$(LC_ALL=C grep -cvxE '"plugins/[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+\.json"' <<< "$files") || rc=$?
+          lines=$(wc -l <<< "$files") || lines=
           # GitHub lists at most 3000 files of a pull request, so a long list is refused rather than trusted.
-          if [ "$(printf '%s\n' "$files" | wc -l)" -gt 20 ] ||
-             printf '%s\n' "$files" | LC_ALL=C grep -qvxE '"plugins/[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+\.json"'; then
-            echo "::error::This pull request changes something other than an entry in plugins/. Its other check results mean nothing."
+          if [ "$rc" = 1 ] && [ "$bad" = 0 ] && [ "$lines" -ge 1 ] && [ "$lines" -le 20 ]; then
+            echo "Only entry files are changed."
+          else
+            echo "::error::This pull request changes something other than an entry in plugins/, or it couldn't be checked. Its other check results mean nothing."
             exit 1
           fi

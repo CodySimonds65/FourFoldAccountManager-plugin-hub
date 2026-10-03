@@ -7,7 +7,9 @@ what users are trusting.
 
 - [ ] On the pull request's own **Files changed** tab (GitHub's, not the check's summary: a pull request that
       edits the workflow can make the summary say anything): exactly one file, under `plugins/`. Look before you
-      click **Approve and run**. "Entry files only" must be green.
+      click **Approve and run**. "Entry files only" runs by itself, without approval, and it must be green BEFORE
+      you click **Approve and run**: after that click the pull request's own workflows run, and a check with the
+      same name could be made to say anything.
 - [ ] The check passed. Open its summary: name, author, sites, cards and the file list are what you expect.
 - [ ] The secret scan passed. If the author marked something `gitleaks:allow`, look at it yourself; the summary says
       how many files carry that comment. The scan is a net for accidents, not a control: it skips images, fonts,
@@ -16,6 +18,8 @@ what users are trusting.
 - [ ] One plugin per pull request, and the pull request touches only that plugin's entry.
 - [ ] The commit is on a branch of the repository the entry names. Open the commit on GitHub: a banner saying it
       "does not belong to any branch on this repository" means it comes from someone's fork — reject it.
+- [ ] If the pull request deletes an entry (the summary lists deletions), it must come from that plugin's own author
+      — or be yours.
 - [ ] The first part of the plugin's id fits its author (a stranger shouldn't list `fourfold.something`).
 - [ ] The name, short label and author don't pose as FourFold, a built-in plugin, or another author.
 - [ ] The plugin's name and author are readable: not blank-looking characters, not letters buried in stacked marks.
@@ -79,18 +83,20 @@ The hub relies on all of these. The workflows can't set them.
 
 1. Settings → Actions → General → "Approval for running fork pull request workflows from contributors":
    **Require approval for all external contributors.** The default only asks for first-time contributors.
-2. Settings → Actions → General → Workflow permissions: **Read repository contents** only, and "Allow GitHub
-   Actions to create and approve pull requests" off. The publish workflow asks for write access itself.
-3. Settings → Actions → General → Actions permissions: allow only actions created by GitHub. Nothing else is used.
+2. Settings → Actions → General → Workflow permissions: **Read repository contents and packages permissions**, and
+   "Allow GitHub Actions to create and approve pull requests" off. The publish workflow asks for write access itself.
+3. Settings → Actions → General → Actions permissions: choose "Allow CodySimonds65, and select non-CodySimonds65,
+   actions and reusable workflows" with only "Allow actions created by GitHub" ticked. Nothing else is used.
 4. Settings → Rules (or Branches) → `main`: require a pull request; require the checks **Check submission** and
    **Entry files only** (a check appears in the picker only after it has run once); block force pushes and
-   deletion. Leave the administrator bypass on, or the hub's own changes can't be merged.
+   deletion. In a ruleset, add "Repository admin" to its bypass list; in a classic branch protection rule, leave
+   "Do not allow bypassing the above settings" unticked. Without one of these the hub's own changes can't be merged.
 5. No collaborators. Anyone with write access can run a changed publish workflow from a branch, or edit the
    release's files by hand, whatever protects `main`.
 6. Settings → Rules → a tag rule for `catalog` (after the first publish has created it): restrict updates and
    deletions. Deleting the tag takes the catalog away from every user.
 7. Settings → General → Releases: immutable releases **off**. The publish replaces `catalog.json` in place.
-8. Settings → Code security: secret scanning and push protection **on**.
+8. Settings → Advanced Security: Secret Protection and Push protection **on**.
 9. Settings → General → Pull Requests: auto-merge **off**. A merge is a deliberate click.
 
 Changes to the hub itself (`.github/`, the documents) never start the submission check. Merge your own such
