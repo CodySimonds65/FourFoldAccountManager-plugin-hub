@@ -35,21 +35,22 @@ jobs:
       # Always the tip of main, not the commit that started this run: a re-run of an old run must not publish old
       # entries over newer ones, or list a plugin that was pulled since.
       - name: Check out the hub
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           ref: main
           path: hub
           persist-credentials: false
 
       - name: Check out the hub tool
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: CodySimonds65/FourFoldAccountManager
+          # Whoever can push to this ref decides what the hub publishes. Change to main when the plugin system is on the app's main.
           ref: feature/plugin-hub
           path: app
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "10.0.x"
 
@@ -63,22 +64,28 @@ jobs:
           gh release view catalog > /dev/null 2>&1 || gh release create catalog --title "Plugin catalog" \
             --notes "The catalog and plugin packages FourFold downloads. The publish workflow manages these files; don't edit them by hand."
 
-      # Only a 404 means there is no catalog yet. Any other answer stops the run: a catalog built without the live one
-      # would skip the rule that an update must raise the version.
+      # Only a 404 for both files means there is no catalog yet. Any other answer stops the run: a catalog built without
+      # the live one would skip the rule that an update must raise the version.
       - name: Get the live catalog
         run: |
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/catalog/catalog.json"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/catalog"
           file="$RUNNER_TEMP/catalog.json"
-          code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$url") || code=000
-          if [ "$code" = "200" ]; then
-            echo "CATALOG_ARGS=--catalog $file" >> "$GITHUB_ENV"
-          elif [ "$code" = "404" ]; then
-            rm -f "$file"
-            echo "CATALOG_ARGS=" >> "$GITHUB_ENV"
-          else
-            echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
-            exit 1
-          fi
+          args=""
+          # catalog.previous.json is the copy the publish saves before it replaces catalog.json. If a run died between
+          # deleting the old catalog and uploading the new one, that copy is the live catalog; 404 for both means there
+          # never was one.
+          for name in catalog.json catalog.previous.json; do
+            code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$base/$name") || code=000
+            if [ "$code" = "200" ]; then
+              args="--catalog $file"
+              break
+            elif [ "$code" != "404" ]; then
+              echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
+              exit 1
+            fi
+          done
+          [ -n "$args" ] || rm -f "$file"
+          echo "CATALOG_ARGS=$args" >> "$GITHUB_ENV"
 
       # The tool prints its errors as escaped plain text. stop-commands is a second guard, so that nothing it prints,
       # a file name from a submitted repository included, can be taken for a workflow command.
@@ -87,12 +94,13 @@ jobs:
           token=$(cat /proc/sys/kernel/random/uuid)
           echo "::stop-commands::$token"
           status=0
-          dotnet "$HUB_TOOL" publish --hub hub --out "$RUNNER_TEMP/out" $CATALOG_ARGS --work "$RUNNER_TEMP/work" || status=$?
+          dotnet "$HUB_TOOL" publish --hub hub --out "$RUNNER_TEMP/out" $CATALOG_ARGS --work "$RUNNER_TEMP/work" 2>&1 || status=$?
           echo "::$token::"
           exit $status
 
-      # Packages first and the catalog last, so the catalog never names a package that isn't there. A package is named
-      # for its plugin and commit, so uploading one before the catalog lists it changes nothing a user sees.
+      # The catalog being replaced is kept as catalog.previous.json first, then the packages go up, and the new catalog
+      # goes last, so the catalog never names a package that isn't there. A package is named for its plugin and commit,
+      # so uploading one before the catalog lists it changes nothing a user sees.
       - name: Upload
         env:
           GH_TOKEN: ${{ github.token }}
@@ -101,6 +109,12 @@ jobs:
           if [ ! -s "$out/catalog.json" ]; then
             echo "::error::The tool left no catalog to publish. Nothing was uploaded."
             exit 1
+          fi
+          # Replacing a release file is a delete and then an upload. If this run dies in between, the next run reads
+          # this copy as the live catalog.
+          if [ -s "$RUNNER_TEMP/catalog.json" ]; then
+            cp "$RUNNER_TEMP/catalog.json" "$RUNNER_TEMP/catalog.previous.json"
+            gh release upload catalog "$RUNNER_TEMP/catalog.previous.json" --clobber
           fi
           shopt -s nullglob
           for package in "$out"/*.zip; do

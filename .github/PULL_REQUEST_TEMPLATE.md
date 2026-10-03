@@ -7,6 +7,8 @@
 
 **Websites it contacts, and why each one is needed:**
 
+**Needs any-website access? Why:**
+
 **For an update — what changed since the listed version:**
 
 - [ ] The entry names a full 40-character commit, not a branch or tag.

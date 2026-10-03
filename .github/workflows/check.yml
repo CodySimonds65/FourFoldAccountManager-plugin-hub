@@ -14,6 +14,11 @@ defaults:
   run:
     shell: bash
 
+# A newer push to the same pull request replaces the run in progress.
+concurrency:
+  group: check-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 # The pull request is checked out as data in hub/ and read, never run. The hub tool is built from the app repository,
 # checked out beside it in app/. Everything the tool writes goes to $RUNNER_TEMP, outside both checkouts. Every
 # dotnet and git command runs from the workspace root, so a file a pull request adds at the top of hub/
@@ -24,23 +29,23 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     env:
-      GITLEAKS_VERSION: "8.21.2"
-      # From gitleaks_8.21.2_checksums.txt in that release. Change it together with the version.
-      GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+      GITLEAKS_VERSION: "8.30.1"
+      # From gitleaks_8.30.1_checksums.txt in that release. Change it together with the version.
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
       HUB_TOOL: app/src/FourFoldAccountManager.HubTool/bin/Release/net10.0/FourFoldAccountManager.HubTool.dll
     steps:
       - name: Check out the hub
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: hub
           fetch-depth: 0
           persist-credentials: false
 
       # A pull request runs the workflow file it brings, so a stranger can edit this file and nothing here can stop
-      # that. This step makes the reviewer see every file the pull request touches. It also refuses anything but an
-      # entry file or removed.json, and it is the only place a file name from the pull request is read: a name is
-      # used only after it has matched the pattern below, and is shown only inside a code block with every
-      # unusual character replaced.
+      # that (guard.yml, which runs from main, is the check a pull request can't edit). This step makes the reviewer see
+      # every file the pull request touches. It also refuses anything but an entry file or removed.json, and it is the
+      # only place a file name from the pull request is read: a name is used only after it has matched the pattern
+      # below, and is shown only inside a code block with every unusual character replaced.
       - name: List what this pull request changes
         env:
           BASE_REF: ${{ github.base_ref }}
@@ -55,26 +60,37 @@ jobs:
           deleted=""
           shown=0
           bad=0
+          removed_changed=0
           # Each record is ":<old mode> <new mode> <old id> <new id> <status>", then the path, both ended by NUL.
           while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
             read -r _ mode _ _ status <<< "${meta#:}"
             ok=0
+            why="not allowed"
             if [[ "$path" =~ $entry_re ]]; then
-              if [[ "$status" == [AM] && "$mode" == 100644 ]]; then
-                ok=1
-                printf '%s\n' "$path" >> "$RUNNER_TEMP/entries.txt"
+              if [[ "$status" == [AMT] ]]; then
+                if [ "$mode" = 100644 ]; then
+                  ok=1
+                  printf '%s\n' "$path" >> "$RUNNER_TEMP/entries.txt"
+                else
+                  why="must be a plain file"
+                fi
               elif [ "$status" = D ]; then
                 ok=1
               fi
-            elif [ "$path" = removed.json ] && [[ "$status" == [AM] && "$mode" == 100644 ]]; then
-              ok=1
+            elif [ "$path" = removed.json ] && [[ "$status" == [AMT] ]]; then
+              if [ "$mode" = 100644 ]; then
+                ok=1
+                removed_changed=1
+              else
+                why="must be a plain file"
+              fi
             fi
 
             safe=$(printf '%s' "$path" | tr -c 'A-Za-z0-9._/ -' '?')
             safe="${safe:0:150}"
             line="$status  $safe"
             if [ "$ok" != 1 ]; then
-              line="$line   <-- not allowed"
+              line="$line   <-- $why"
               bad=1
             elif [ "$status" = D ]; then
               deleted+="$safe"$'\n'
@@ -109,6 +125,10 @@ jobs:
               printf '%s' "$deleted"
               echo '```'
             fi
+            if [ "$removed_changed" = 1 ]; then
+              echo
+              echo "**removed.json is changed: only maintainers pull or restore a plugin.**"
+            fi
             if [ "$bad" = 1 ]; then
               echo
               echo "**A submission changes only its own entry file.** This pull request changes something else, so a check result for it means nothing."
@@ -121,14 +141,15 @@ jobs:
           fi
 
       - name: Check out the hub tool
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: CodySimonds65/FourFoldAccountManager
+          # Whoever can push to this ref decides what the hub publishes. Change to main when the plugin system is on the app's main.
           ref: feature/plugin-hub
           path: app
           persist-credentials: false
 
-      - uses: actions/setup-dotnet@v4
+      - uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4
         with:
           dotnet-version: "10.0.x"
 
@@ -137,18 +158,24 @@ jobs:
 
       - name: Get the live catalog
         run: |
-          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/catalog/catalog.json"
+          base="https://github.com/${GITHUB_REPOSITORY}/releases/download/catalog"
           file="$RUNNER_TEMP/catalog.json"
-          code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$url") || code=000
-          if [ "$code" = "200" ]; then
-            echo "CATALOG_ARGS=--catalog $file" >> "$GITHUB_ENV"
-          elif [ "$code" = "404" ]; then
-            rm -f "$file"
-            echo "CATALOG_ARGS=" >> "$GITHUB_ENV"
-          else
-            echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
-            exit 1
-          fi
+          args=""
+          # catalog.previous.json is the copy the publish saves before it replaces catalog.json. If a run died between
+          # deleting the old catalog and uploading the new one, that copy is the live catalog; 404 for both means there
+          # never was one.
+          for name in catalog.json catalog.previous.json; do
+            code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$base/$name") || code=000
+            if [ "$code" = "200" ]; then
+              args="--catalog $file"
+              break
+            elif [ "$code" != "404" ]; then
+              echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
+              exit 1
+            fi
+          done
+          [ -n "$args" ] || rm -f "$file"
+          echo "CATALOG_ARGS=$args" >> "$GITHUB_ENV"
 
       # Every entry is checked and reported, even after one fails. The tool's text is escaped for this page; stop-commands
       # is a second guard, so nothing it prints can be taken for a workflow command.
@@ -159,7 +186,7 @@ jobs:
           status=0
           while IFS= read -r entry; do
             [ -n "$entry" ] || continue
-            dotnet "$HUB_TOOL" check --hub hub --entry "$entry" $CATALOG_ARGS --work "$RUNNER_TEMP/work" --summary "$GITHUB_STEP_SUMMARY" || status=1
+            dotnet "$HUB_TOOL" check --hub hub --entry "$entry" $CATALOG_ARGS --work "$RUNNER_TEMP/work" --summary "$GITHUB_STEP_SUMMARY" 2>&1 || status=1
           done < "$RUNNER_TEMP/entries.txt"
           echo "::$token::"
           exit $status
@@ -169,13 +196,13 @@ jobs:
           token=$(cat /proc/sys/kernel/random/uuid)
           echo "::stop-commands::$token"
           status=0
-          dotnet "$HUB_TOOL" publish --hub hub --out "$RUNNER_TEMP/out" $CATALOG_ARGS --work "$RUNNER_TEMP/work" || status=$?
+          dotnet "$HUB_TOOL" publish --hub hub --out "$RUNNER_TEMP/out" $CATALOG_ARGS --work "$RUNNER_TEMP/work" 2>&1 || status=$?
           echo "::$token::"
           exit $status
 
-      # The whole submitted repository at that commit, not only the plugin's folder.
+      # The whole submitted repository at that commit, not only the plugin's folder. A net for accidents, not a control.
       - name: Scan the submitted repositories for secrets
-        if: always()
+        if: ${{ !cancelled() }}
         run: |
           work="$RUNNER_TEMP/work"
           if [ ! -d "$work" ]; then
@@ -189,8 +216,11 @@ jobs:
           token=$(cat /proc/sys/kernel/random/uuid)
           echo "::stop-commands::$token"
           status=0
-          "$RUNNER_TEMP/gitleaks" detect --no-git --source "$work" --redact --no-banner || status=$?
+          "$RUNNER_TEMP/gitleaks" detect --no-git --source "$work" --redact --verbose --no-banner 2>&1 || status=$?
           echo "::$token::"
+          # How many files opt out of the scan with a gitleaks:allow comment, for the reviewer to see.
+          allowed=$(grep -rIl -- 'gitleaks:allow' "$work" | wc -l || true)
+          printf '\nSecret scan: files carrying a gitleaks:allow comment: %s.\n' "$allowed" >> "$GITHUB_STEP_SUMMARY"
           if [ "$status" -ne 0 ]; then
             echo "::error::The secret scan found a secret in a submitted repository, or couldn't run. A secret must be removed AND revoked: it is already public there."
             exit 1
