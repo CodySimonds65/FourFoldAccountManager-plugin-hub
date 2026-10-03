@@ -1,0 +1,7 @@
+work/
+out/
+app/
+catalog.json
+changed.txt
+gitleaks
+gitleaks.tar.gz

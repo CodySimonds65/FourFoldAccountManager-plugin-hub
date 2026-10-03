@@ -1,0 +1,197 @@
+name: Check submission
+
+on:
+  pull_request:
+    paths:
+      - "plugins/**"
+      - "removed.json"
+
+# Runs on pull requests from forks: read-only, no secrets.
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# The pull request is checked out as data in hub/ and read, never run. The hub tool is built from the app repository,
+# checked out beside it in app/. Everything the tool writes goes to $RUNNER_TEMP, outside both checkouts. Every
+# dotnet and git command runs from the workspace root, so a file a pull request adds at the top of hub/
+# (Directory.Build.props, NuGet.config, global.json) is never in the path of the build.
+jobs:
+  check:
+    name: Check submission
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GITLEAKS_VERSION: "8.21.2"
+      # From gitleaks_8.21.2_checksums.txt in that release. Change it together with the version.
+      GITLEAKS_SHA256: "5bc41815076e6ed6ef8fbecc9d9b75bcae31f39029ceb55da08086315316e3ba"
+      HUB_TOOL: app/src/FourFoldAccountManager.HubTool/bin/Release/net10.0/FourFoldAccountManager.HubTool.dll
+    steps:
+      - name: Check out the hub
+        uses: actions/checkout@v4
+        with:
+          path: hub
+          fetch-depth: 0
+          persist-credentials: false
+
+      # A pull request runs the workflow file it brings, so a stranger can edit this file and nothing here can stop
+      # that. This step makes the reviewer see every file the pull request touches. It also refuses anything but an
+      # entry file or removed.json, and it is the only place a file name from the pull request is read: a name is
+      # used only after it has matched the pattern below, and is shown only inside a code block with every
+      # unusual character replaced.
+      - name: List what this pull request changes
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          export LC_ALL=C
+          changes="$RUNNER_TEMP/changes"
+          git -C hub diff --raw -z --no-abbrev --no-renames --no-ext-diff "origin/${BASE_REF}...HEAD" -- > "$changes"
+
+          entry_re='^plugins/[a-z0-9]+(-[a-z0-9]+)*(\.[a-z0-9]+(-[a-z0-9]+)*)+\.json$'
+          : > "$RUNNER_TEMP/entries.txt"
+          listing=""
+          deleted=""
+          shown=0
+          bad=0
+          # Each record is ":<old mode> <new mode> <old id> <new id> <status>", then the path, both ended by NUL.
+          while IFS= read -r -d '' meta && IFS= read -r -d '' path; do
+            read -r _ mode _ _ status <<< "${meta#:}"
+            ok=0
+            if [[ "$path" =~ $entry_re ]]; then
+              if [[ "$status" == [AM] && "$mode" == 100644 ]]; then
+                ok=1
+                printf '%s\n' "$path" >> "$RUNNER_TEMP/entries.txt"
+              elif [ "$status" = D ]; then
+                ok=1
+              fi
+            elif [ "$path" = removed.json ] && [[ "$status" == [AM] && "$mode" == 100644 ]]; then
+              ok=1
+            fi
+
+            safe=$(printf '%s' "$path" | tr -c 'A-Za-z0-9._/ -' '?')
+            safe="${safe:0:150}"
+            line="$status  $safe"
+            if [ "$ok" != 1 ]; then
+              line="$line   <-- not allowed"
+              bad=1
+            elif [ "$status" = D ]; then
+              deleted+="$safe"$'\n'
+            fi
+            shown=$((shown + 1))
+            if [ "$shown" -le 200 ]; then
+              listing+="$line"$'\n'
+            fi
+          done < "$changes"
+
+          if [ "$shown" -eq 0 ]; then
+            echo "::error::The files this pull request changes couldn't be listed."
+            exit 1
+          fi
+          if [ "$shown" -gt 200 ]; then
+            listing+="... and $((shown - 200)) more"$'\n'
+          fi
+
+          {
+            echo "## Files this pull request changes"
+            echo
+            echo '```text'
+            printf '%s' "$listing"
+            echo '```'
+            if [ -n "$deleted" ]; then
+              echo
+              echo "## Entries this pull request DELETES"
+              echo
+              echo "These are not checked below. They leave the hub when this is merged; removed.json should say why."
+              echo
+              echo '```text'
+              printf '%s' "$deleted"
+              echo '```'
+            fi
+            if [ "$bad" = 1 ]; then
+              echo
+              echo "**A submission changes only its own entry file.** This pull request changes something else, so a check result for it means nothing."
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "$bad" = 1 ]; then
+            echo "::error::A submission changes only its own entry file."
+            exit 1
+          fi
+
+      - name: Check out the hub tool
+        uses: actions/checkout@v4
+        with:
+          repository: CodySimonds65/FourFoldAccountManager
+          ref: feature/plugin-hub
+          path: app
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build the hub tool
+        run: dotnet build app/src/FourFoldAccountManager.HubTool -c Release --nologo
+
+      - name: Get the live catalog
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/catalog/catalog.json"
+          file="$RUNNER_TEMP/catalog.json"
+          code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$url") || code=000
+          if [ "$code" = "200" ]; then
+            echo "CATALOG_ARGS=--catalog $file" >> "$GITHUB_ENV"
+          elif [ "$code" = "404" ]; then
+            rm -f "$file"
+            echo "CATALOG_ARGS=" >> "$GITHUB_ENV"
+          else
+            echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
+            exit 1
+          fi
+
+      # Every entry is checked and reported, even after one fails. The tool's text is escaped for this page; stop-commands
+      # is a second guard, so nothing it prints can be taken for a workflow command.
+      - name: Check each changed entry
+        run: |
+          token=$(cat /proc/sys/kernel/random/uuid)
+          echo "::stop-commands::$token"
+          status=0
+          while IFS= read -r entry; do
+            [ -n "$entry" ] || continue
+            dotnet "$HUB_TOOL" check --hub hub --entry "$entry" $CATALOG_ARGS --work "$RUNNER_TEMP/work" --summary "$GITHUB_STEP_SUMMARY" || status=1
+          done < "$RUNNER_TEMP/entries.txt"
+          echo "::$token::"
+          exit $status
+
+      - name: Check the whole hub still builds a catalog
+        run: |
+          token=$(cat /proc/sys/kernel/random/uuid)
+          echo "::stop-commands::$token"
+          status=0
+          dotnet "$HUB_TOOL" publish --hub hub --out "$RUNNER_TEMP/out" $CATALOG_ARGS --work "$RUNNER_TEMP/work" || status=$?
+          echo "::$token::"
+          exit $status
+
+      # The whole submitted repository at that commit, not only the plugin's folder.
+      - name: Scan the submitted repositories for secrets
+        if: always()
+        run: |
+          work="$RUNNER_TEMP/work"
+          if [ ! -d "$work" ]; then
+            echo "Nothing was downloaded, so there is nothing to scan."
+            exit 0
+          fi
+          archive="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl -fsSL --max-time 120 -o "$archive" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          echo "${GITLEAKS_SHA256}  $archive" | sha256sum --check --strict -
+          tar -xzf "$archive" -C "$RUNNER_TEMP" gitleaks
+          token=$(cat /proc/sys/kernel/random/uuid)
+          echo "::stop-commands::$token"
+          status=0
+          "$RUNNER_TEMP/gitleaks" detect --no-git --source "$work" --redact --no-banner || status=$?
+          echo "::$token::"
+          if [ "$status" -ne 0 ]; then
+            echo "::error::The secret scan found a secret in a submitted repository, or couldn't run. A secret must be removed AND revoked: it is already public there."
+            exit 1
+          fi

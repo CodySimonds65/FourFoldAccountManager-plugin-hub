@@ -1,0 +1,109 @@
+name: Publish catalog
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "plugins/**"
+      - "removed.json"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+defaults:
+  run:
+    shell: bash
+
+# One at a time, so two merges can't upload over each other or build from a catalog the other is about to replace.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
+# The hub is checked out in hub/ and the tool's source beside it in app/, as in check.yml. Everything the tool writes
+# goes to $RUNNER_TEMP. The token is given only to the steps that call gh, never to the build or the tool.
+jobs:
+  publish:
+    # A manual run from another branch would publish that branch's entries to everyone.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      GH_REPO: ${{ github.repository }}
+      HUB_TOOL: app/src/FourFoldAccountManager.HubTool/bin/Release/net10.0/FourFoldAccountManager.HubTool.dll
+    steps:
+      # Always the tip of main, not the commit that started this run: a re-run of an old run must not publish old
+      # entries over newer ones, or list a plugin that was pulled since.
+      - name: Check out the hub
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          path: hub
+          persist-credentials: false
+
+      - name: Check out the hub tool
+        uses: actions/checkout@v4
+        with:
+          repository: CodySimonds65/FourFoldAccountManager
+          ref: feature/plugin-hub
+          path: app
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "10.0.x"
+
+      - name: Build the hub tool
+        run: dotnet build app/src/FourFoldAccountManager.HubTool -c Release --nologo
+
+      - name: Make sure the release exists
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view catalog > /dev/null 2>&1 || gh release create catalog --title "Plugin catalog" \
+            --notes "The catalog and plugin packages FourFold downloads. The publish workflow manages these files; don't edit them by hand."
+
+      # Only a 404 means there is no catalog yet. Any other answer stops the run: a catalog built without the live one
+      # would skip the rule that an update must raise the version.
+      - name: Get the live catalog
+        run: |
+          url="https://github.com/${GITHUB_REPOSITORY}/releases/download/catalog/catalog.json"
+          file="$RUNNER_TEMP/catalog.json"
+          code=$(curl -sSL --max-time 120 -o "$file" -w '%{http_code}' "$url") || code=000
+          if [ "$code" = "200" ]; then
+            echo "CATALOG_ARGS=--catalog $file" >> "$GITHUB_ENV"
+          elif [ "$code" = "404" ]; then
+            rm -f "$file"
+            echo "CATALOG_ARGS=" >> "$GITHUB_ENV"
+          else
+            echo "::error::The live catalog couldn't be fetched (HTTP $code). Not continuing without it."
+            exit 1
+          fi
+
+      # The tool prints its errors as escaped plain text. stop-commands is a second guard, so that nothing it prints,
+      # a file name from a submitted repository included, can be taken for a workflow command.
+      - name: Build the catalog
+        run: |
+          token=$(cat /proc/sys/kernel/random/uuid)
+          echo "::stop-commands::$token"
+          status=0
+          dotnet "$HUB_TOOL" publish --hub hub --out "$RUNNER_TEMP/out" $CATALOG_ARGS --work "$RUNNER_TEMP/work" || status=$?
+          echo "::$token::"
+          exit $status
+
+      # Packages first and the catalog last, so the catalog never names a package that isn't there. A package is named
+      # for its plugin and commit, so uploading one before the catalog lists it changes nothing a user sees.
+      - name: Upload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          out="$RUNNER_TEMP/out"
+          if [ ! -s "$out/catalog.json" ]; then
+            echo "::error::The tool left no catalog to publish. Nothing was uploaded."
+            exit 1
+          fi
+          shopt -s nullglob
+          for package in "$out"/*.zip; do
+            gh release upload catalog "$package" --clobber
+          done
+          gh release upload catalog "$out/catalog.json" --clobber
