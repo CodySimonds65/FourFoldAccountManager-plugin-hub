@@ -103,5 +103,5 @@ Changes to the hub itself (`.github/`, the documents) never start the submission
 changes as an administrator. Never merge a stranger's change to `.github/`: a workflow on `main` holds the token
 that writes the catalog.
 
-Until part 3 of the plugin system is on the app's `main` branch, both workflows build the hub tool from the app's
-`feature/plugin-hub` branch. After that, change `ref:` in both workflows to `main`.
+Both workflows build the hub tool from the app's `main` branch, so a submission is checked with the rules of the
+FourFold that is released. Whoever can push there decides what the hub publishes.

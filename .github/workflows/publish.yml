@@ -45,8 +45,8 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: CodySimonds65/FourFoldAccountManager
-          # Whoever can push to this ref decides what the hub publishes. Change to main when the plugin system is on the app's main.
-          ref: feature/plugin-hub
+          # Whoever can push to this ref decides what the hub publishes.
+          ref: main
           path: app
           persist-credentials: false
 
