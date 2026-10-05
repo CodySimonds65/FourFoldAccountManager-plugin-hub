@@ -32,7 +32,8 @@ For a new plugin, read everything at the commit. For an update, use the compare 
 - [ ] **Network.** Every request goes to a declared site, and each declared site is needed. Look for hosts built
       from strings, and for `fetch`, `XMLHttpRequest`, `WebSocket`, `EventSource`, `sendBeacon`, `<img>`, `<link>`
       and CSS `url()`.
-- [ ] **What leaves.** Account labels, in-game names, XP and stats go nowhere the description doesn't say.
+- [ ] **What leaves.** Account labels, in-game names, player ids, XP, stats, equipment, silver, gold and location go
+      nowhere the description doesn't say.
 - [ ] **Channels FourFold can't lock.** Reject a plugin that uses any of these:
   - WebRTC in any spelling (`RTCPeerConnection`, `webkitRTCPeerConnection`, data channels);
   - `<link rel="dns-prefetch">` or `<link rel="preconnect">`;
